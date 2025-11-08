@@ -1,14 +1,14 @@
-
 import logging
 import sys
 import os
 import asyncio
 
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.contrib.fsm_storage.memory import MemoryStorage 
-from aiogram.utils.exceptions import ChatNotFound, MessageNotModified
+# --- ИМПОРТЫ ДЛЯ AIOGRAM 3.X ---
+from aiogram import Bot, Dispatcher, types, F # Добавлен F для фильтров
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage 
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.exceptions import ChatNotFound, MessageNotModified # Изменен путь к исключениям
 
 # --- 0. Импорт dotenv для локальной разработки ---
 try:
@@ -45,7 +45,8 @@ except ValueError:
 # --- 3. Инициализация бота, диспетчера и FSM Storage ---
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot, storage=storage)
+# В aiogram 3.x диспетчер инициализируется без объекта bot, он передается в start_polling
+dp = Dispatcher(storage=storage) 
 
 # --- 4. Хранилище для маппинга сообщений и FSM States ---
 # Ключ: ID сообщения в лог-группе, Значение: ID пользователя, который его отправил
@@ -100,11 +101,12 @@ def get_support_reply_keyboard(user_id):
 
 # --- 6. Универсальный хендлер для отмены ---
 
-@dp.callback_query_handler(lambda c: c.data == 'cancel_to_menu', state="*")
+# В aiogram 3.x используем F.data вместо лямбда-функций в декораторах для фильтрации
+@dp.callback_query(F.data == 'cancel_to_menu') 
 async def process_cancel_callback(callback_query: types.CallbackQuery, state: FSMContext):
     """Сбрасывает FSM-состояние и возвращает в главное меню."""
     await bot.answer_callback_query(callback_query.id, text="Отменено.")
-    await state.finish()
+    await state.clear() # В aiogram 3.x используем .clear() вместо .finish()
     
     # Пытаемся удалить сообщение, если оно было отредактировано (например, при выборе отзыва)
     try:
@@ -120,9 +122,10 @@ async def process_cancel_callback(callback_query: types.CallbackQuery, state: FS
 
 # --- 7. Хендлеры для пользователя (Главное меню) ---
 
-@dp.message_handler(commands=['start', 'menu'], state="*")
+# В aiogram 3.x используем dp.message вместо dp.message_handler, и F.command
+@dp.message(F.command('start') | F.command('menu')) 
 async def start_command(message: types.Message, state: FSMContext):
-    await state.finish() 
+    await state.clear() # В aiogram 3.x используем .clear()
     await message.reply(
         "Добро пожаловать! Выберите нужный раздел:",
         reply_markup=get_main_menu_keyboard()
@@ -130,46 +133,46 @@ async def start_command(message: types.Message, state: FSMContext):
 
 # --- 8. Хендлеры для ЗАКАЗОВ (FSM) ---
 
-@dp.callback_query_handler(lambda c: c.data == 'start_order', state="*")
-async def process_start_order_callback(callback_query: types.CallbackQuery):
+@dp.callback_query(F.data == 'start_order') 
+async def process_start_order_callback(callback_query: types.CallbackQuery, state: FSMContext): # Добавляем state: FSMContext
     await bot.answer_callback_query(callback_query.id)
     await bot.send_message(
         callback_query.from_user.id,
         "Отлично! Что бы вы хотели приобрести?",
         reply_markup=get_cancel_keyboard() 
     )
-    await OrderStates.waiting_for_purchase_item.set()
+    await state.set_state(OrderStates.waiting_for_purchase_item) # Используем .set_state()
 
-@dp.message_handler(state=OrderStates.waiting_for_purchase_item, content_types=types.ContentType.TEXT)
+@dp.message(OrderStates.waiting_for_purchase_item, F.content_type == types.ContentType.TEXT) # F.content_type
 async def handle_purchase_item(message: types.Message, state: FSMContext):
     logger.info(f"Получен заказ от {message.from_user.id}: {message.text}")
     await message.reply(
         "Спасибо за ваш заказ! Мы скоро свяжемся с вами для уточнения деталей.",
         reply_markup=get_main_menu_keyboard()
     )
-    await state.finish()
+    await state.clear() # В aiogram 3.x используем .clear()
 
-@dp.message_handler(state=OrderStates.waiting_for_purchase_item, content_types=types.ContentType.ANY)
+@dp.message(OrderStates.waiting_for_purchase_item) # Ловим все, что не TEXT
 async def handle_invalid_order_input(message: types.Message):
     await message.reply("Пожалуйста, опишите ваш заказ текстом.", reply_markup=get_cancel_keyboard())
 
 
 # --- 9. Хендлеры для Техподдержки (FSM) ---
 
-@dp.callback_query_handler(lambda c: c.data == 'start_support', state="*")
-async def process_start_support_callback(callback_query: types.CallbackQuery):
+@dp.callback_query(F.data == 'start_support') 
+async def process_start_support_callback(callback_query: types.CallbackQuery, state: FSMContext): # Добавляем state: FSMContext
     await bot.answer_callback_query(callback_query.id)
     await bot.send_message(
         callback_query.from_user.id,
         "Напишите ваше сообщение для оператора, или отправьте фото/документ. Как только вы его отправите, мы передадим его в техподдержку.",
         reply_markup=get_cancel_keyboard() 
     )
-    await SupportStates.waiting_for_support_message.set()
+    await state.set_state(SupportStates.waiting_for_support_message) # Используем .set_state()
 
-@dp.message_handler(state=SupportStates.waiting_for_support_message, content_types=types.ContentType.ANY)
+@dp.message(SupportStates.waiting_for_support_message, F.content_type != types.ContentType.UNKNOWN) # F.content_type
 async def handle_user_support_message(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    await state.finish() 
+    await state.clear() # В aiogram 3.x используем .clear()
     
     log_header = (
         f"❓ **НОВЫЙ ЗАПРОС В ТЕХПОДДЕРЖКУ**\n"
@@ -224,8 +227,8 @@ async def handle_user_support_message(message: types.Message, state: FSMContext)
 
 # --- 10. Хендлеры для ОТЗЫВОВ (FSM) ---
 
-@dp.callback_query_handler(lambda c: c.data == 'start_review', state="*")
-async def process_start_review_callback(callback_query: types.CallbackQuery):
+@dp.callback_query(F.data == 'start_review') 
+async def process_start_review_callback(callback_query: types.CallbackQuery, state: FSMContext): # Добавляем state: FSMContext
     """Шаг 1: Предлагаем выбрать тип отзыва."""
     await bot.answer_callback_query(callback_query.id)
     
@@ -234,9 +237,9 @@ async def process_start_review_callback(callback_query: types.CallbackQuery):
         "Выберите, пожалуйста, тип отзыва:",
         reply_markup=get_review_type_keyboard()
     )
-    await ReviewStates.waiting_for_review_type.set()
+    await state.set_state(ReviewStates.waiting_for_review_type) # Используем .set_state()
 
-@dp.callback_query_handler(lambda c: c.data.startswith('review_type_'), state=ReviewStates.waiting_for_review_type)
+@dp.callback_query(ReviewStates.waiting_for_review_type, F.data.startswith('review_type_')) 
 async def process_review_type_selection(callback_query: types.CallbackQuery, state: FSMContext):
     """Шаг 2: Получаем тип отзыва и просим ввести текст."""
     await bot.answer_callback_query(callback_query.id)
@@ -258,9 +261,9 @@ async def process_review_type_selection(callback_query: types.CallbackQuery, sta
         reply_markup=get_cancel_keyboard() 
     )
     
-    await ReviewStates.waiting_for_review_text.set()
+    await state.set_state(ReviewStates.waiting_for_review_text) # Используем .set_state()
 
-@dp.message_handler(state=ReviewStates.waiting_for_review_text, content_types=types.ContentType.TEXT)
+@dp.message(ReviewStates.waiting_for_review_text, F.content_type == types.ContentType.TEXT)
 async def handle_user_review(message: types.Message, state: FSMContext):
     """Шаг 3: Обрабатывает полученный отзыв и отправляет его в лог-группу."""
     user_id = message.from_user.id
@@ -269,7 +272,7 @@ async def handle_user_review(message: types.Message, state: FSMContext):
     data = await state.get_data()
     review_type = data.get('review_type', 'неизвестный')
     
-    await state.finish()
+    await state.clear() # В aiogram 3.x используем .clear()
     
     if review_type == 'positive':
         log_title = "✅ ПОЛОЖИТЕЛЬНЫЙ ОТЗЫВ"
@@ -301,13 +304,13 @@ async def handle_user_review(message: types.Message, state: FSMContext):
         reply_markup=get_main_menu_keyboard()
     )
 
-@dp.message_handler(state=ReviewStates.waiting_for_review_text, content_types=types.ContentType.ANY)
+@dp.message(ReviewStates.waiting_for_review_text) # Ловим все, что не TEXT
 async def handle_invalid_review_input(message: types.Message):
     await message.reply("Пожалуйста, напишите ваш отзыв текстом.", reply_markup=get_cancel_keyboard())
     
 # --- 11. Хендлеры для группы логгирования (Администратор) ---
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('reply_'))
+@dp.callback_query(F.data.startswith('reply_'))
 async def process_reply_button(callback_query: types.CallbackQuery):
     """
     Обрабатывает нажатие кнопки "Ответить" в лог-группе, информируя админа.
@@ -320,8 +323,8 @@ async def process_reply_button(callback_query: types.CallbackQuery):
         text="Чтобы ответить пользователю, используйте функцию 'Ответить' (Reply) прямо на сообщение пользователя в группе с логами. Бот автоматически перешлет ваш ответ."
     )
 
-
-@dp.message_handler(chat_id=LOG_GROUP_ID, content_types=types.ContentType.ANY)
+# В aiogram 3.x для обработки сообщений в конкретном чате используем F.chat.id
+@dp.message(F.chat.id == LOG_GROUP_ID)
 async def handle_admin_reply(message: types.Message):
     # Проверяем, является ли это ответом на сообщение, которое мы залогировали
     if message.reply_to_message:
@@ -366,7 +369,7 @@ async def handle_admin_reply(message: types.Message):
 
 
 # --- 12. Общий хендлер для Callback Query (Улучшение UX) ---
-@dp.callback_query_handler()
+@dp.callback_query() # Общий хендлер без фильтра
 async def handle_all_callbacks(callback_query: types.CallbackQuery):
     """Обрабатывает все колбэки, которые не были обработаны другими хендлерами."""
     try:
@@ -408,14 +411,23 @@ async def check_group_access():
 
 
 # --- 14. Запуск бота ---
-if __name__ == '__main__':
-    logger.info("Инициализация бота...")
+async def main():
+    logger.info("Начинаем запуск бота...")
     
-    loop = asyncio.get_event_loop()
-    
-    if not loop.run_until_complete(check_group_access()):
+    # Проверка доступа к группе логирования
+    if not await check_group_access():
         logger.error("Запуск бота отменен из-за критической ошибки конфигурации.")
         sys.exit(1)
         
     logger.info("Запуск диспетчера...")
-    executor.start_polling(dp, skip_updates=True)
+    # В aiogram 3.x bot передается в start_polling
+    await dp.start_polling(bot, skip_updates=True) 
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен вручную.")
+    except Exception as e:
+        logger.exception("Произошла ошибка при запуске бота:")
+
