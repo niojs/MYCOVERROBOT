@@ -1,0 +1,5 @@
+  .env
+  env_vars.conf
+  __pycache__/
+  *.pyc
+  venv/
